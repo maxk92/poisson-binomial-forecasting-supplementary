@@ -24,12 +24,12 @@ Pooled across **1822 matches** from the five 2015/16 European top leagues
 
 | Finding | Quantitative claim |
 |---|---|
-| **Post-match xG-based forecasts beat the pre-match betting market** on both proper scoring rules. | Polynomial multiplication: Brier = 0.5392, RPS = 0.1768; Bet365: Brier = 0.5871, RPS = 0.1992. |
+| **Post-match xG-based forecasts beat the pre-match betting market** on both proper scoring rules. | Polynomial multiplication: Brier = 0.5391, RPS = 0.1768; Bet365: Brier = 0.5871, RPS = 0.1992. |
 | Polynomial multiplication is the **best of the four xG-based models** by every metric we report. | Lowest Brier, lowest RPS; lowest TVD and KL on home, away, total and exact-scoreline distributions. |
-| Modelling between-team dependence (Bivariate Poisson, Dixon–Coles) gives a **small but consistent improvement on exact scorelines** over independent Double Poisson. | DC reduces exact-scoreline TVD from 0.1293 (DP) to 0.1234; KL from 0.0551 to 0.0538. BP reduces only marginally because fitted λ₃ is near zero. |
-| Bet365 is the **best-calibrated** of all five forecasts, but trades calibration for sharpness — its Brier and RPS are the worst. | ECE: Bet365 = 0.0196, DC = 0.0211, DP = 0.0237, BP = 0.0238, PB = 0.0274. |
+| Modelling between-team dependence (DIBP, Dixon–Coles) gives a **small but consistent improvement on exact scorelines** over independent Double Poisson. | DIBP reduces exact-scoreline TVD from 0.129 (DP) to 0.124; KL from 0.055 to 0.053. Dixon–Coles: TVD to 0.123; KL to 0.054. DIBP and DC are essentially tied on scoreline fit. |
+| Bet365 is the **best-calibrated** of all five forecasts, but trades calibration for sharpness — its Brier and RPS are the worst. | ECE: Bet365 = 0.0196, DC = 0.0211, DP = 0.0237, PB = 0.0274 (DIBP similar to DP; not re-captured in summary CSV for this run). |
 | Among the model approaches, **Dixon–Coles inherits Double-Poisson sharpness while improving calibration** (especially on draws). | DC ECE_draw = 0.0195 vs DP ECE_draw = 0.0288. |
-| Polynomial multiplication is **better-calibrated on draws** than the other models because it directly models discreteness of shot outcomes. | PB ECE_draw = 0.0225 vs DP/BP ≈ 0.028; PB also has the best home and away marginal fit. |
+| Polynomial multiplication is **better-calibrated on draws** than the other models because it directly models discreteness of shot outcomes. | PB ECE_draw = 0.0225 vs DP ≈ 0.028; PB also has the best home and away marginal fit. |
 
 ---
 
@@ -149,42 +149,45 @@ $A \sim \text{Pois}(\lambda_A = \sum p_j)$.
 This is the textbook xG-based score forecast (Maher, 1982; Eggels et al.,
 2016). The PMF is truncated at $k = 10$ goals and renormalised.
 
-### 3.3 Bivariate Poisson (Karlis & Ntzoufras, 2003)
+### 3.3 Diagonal Inflated Bivariate Poisson / DIBP (Karlis & Ntzoufras, 2005)
 
-Introduces a shared latent component $W_3$:
+The plain Bivariate Poisson (Karlis & Ntzoufras, 2003) introduces a
+shared latent component $W_3$ so that $H = W_1 + W_3$, $A = W_2 + W_3$,
+giving $\mathrm{Cov}(H, A) = \lambda_3 \ge 0$. Because soccer data
+typically shows near-zero or slightly negative home/away goal correlation,
+MLE pushes $\lambda_3 \to 0$ and BP collapses to Double Poisson — an
+identified weakness of the 2003 model.
+
+Karlis & Ntzoufras (2005) propose the **Diagonal Inflated Bivariate
+Poisson (DIBP)**, which adds a draw-inflation component:
 
 $$
-H = W_1 + W_3, \quad A = W_2 + W_3, \quad W_i \overset{\text{ind}}{\sim} \text{Pois}(\lambda_i).
+f_{\text{DIBP}}(x, y) =
+\begin{cases}
+(1-p)\,f_{\text{BP}}(x,y\mid\lambda_1,\lambda_2,\lambda_3) & x \neq y \\
+(1-p)\,f_{\text{BP}}(x,y) + p\,f_{\text{Pois}}(x\mid\theta) & x = y
+\end{cases}
 $$
 
-So $\mathrm{Cov}(H, A) = \lambda_3 \ge 0$ while preserving Poisson
-marginals: $H \sim \text{Pois}(\lambda_1 + \lambda_3)$,
-$A \sim \text{Pois}(\lambda_2 + \lambda_3)$. The joint PMF is
+The inflation weight $p \in [0, 1]$ and Poisson rate $\theta > 0$ are
+estimated jointly with $\lambda_3$ by 3-D MLE via L-BFGS-B
+(`fit_dibp_params`, 9 starting points to avoid local optima). Per-match
+marginals remain anchored at xG sums:
+$\lambda_1 = \max(\text{home\_xg} - \lambda_3, \varepsilon)$,
+$\lambda_2 = \max(\text{away\_xg} - \lambda_3, \varepsilon)$.
 
-$$
-P(H{=}x, A{=}y) = e^{-(\lambda_1+\lambda_2+\lambda_3)}
-\sum_{k=0}^{\min(x,y)}
-\frac{\lambda_3^k}{k!}\;
-\frac{\lambda_1^{x-k}}{(x-k)!}\;
-\frac{\lambda_2^{y-k}}{(y-k)!}.
-$$
+Key properties over plain BP:
+- **Allows negative marginal covariance** even when $\lambda_3 = 0$,
+  because the draw-inflation mass shifts probability from off-diagonal to
+  diagonal cells.
+- **Explicitly models excess draws**: soccer draws are empirically more
+  frequent than Poisson independence predicts; the Poisson$(θ)$ inflation
+  corrects this directly.
+- Poisson inflation is chosen for parsimony (1 parameter) and best BIC
+  in the paper's simulation examples.
 
-We anchor the marginals at the observed xG sums, so for each match
-$\lambda_1 = \max(\text{home\_xg} - \lambda_3,\,\varepsilon)$ and
-$\lambda_2 = \max(\text{away\_xg} - \lambda_3,\,\varepsilon)$. **A single
-$\lambda_3$ is fitted globally per league** by maximum likelihood on
-observed scores (`fit_bivariate_poisson_lambda3`, scalar bounded
-`scipy.optimize.minimize_scalar`).
-
-The implementation is `bivariate_poisson_matrix` in
-`probability_generation.py`. Truncation at 10 goals + renormalisation is
-applied as for Double Poisson.
-
-**Limitation note for the paper.** Bivariate Poisson constrains
-$\mathrm{Cov}(H, A) \ge 0$. The empirical correlation of home and away
-goals in our sample is essentially zero or slightly negative, so MLE
-typically pushes $\lambda_3 \to 0$ and the model becomes nearly
-indistinguishable from Double Poisson.
+The implementation is `diagonal_inflated_bivariate_poisson_matrix` (which
+internally calls `bivariate_poisson_matrix`) in `probability_generation.py`.
 
 ### 3.4 Dixon–Coles (1997)
 
@@ -224,20 +227,25 @@ information-content comparison of the paper.
 
 ### 3.6 Fitted dependence parameters per league
 
-| League | $\lambda_3$ (Bivariate Poisson) | $\rho$ (Dixon–Coles) |
-|---|---|---|
-| Premier League (epl_1516) | 0.0144 | −0.0775 |
-| Bundesliga (bundesliga_1516) | 0.0002 | −0.0647 |
-| La Liga (laliga_1516) | 0.0002 | −0.1003 |
-| Serie A (seriea_1516) | 0.0002 | +0.0318 |
-| Ligue 1 (ligue1_1516) | 0.0205 | −0.1100 |
+| League | $\lambda_3$ (DIBP) | $p$ (DIBP) | $\theta$ (DIBP) | $\rho$ (Dixon–Coles) |
+|---|---|---|---|---|
+| Premier League (epl_1516) | 0.0000 | 0.0558 | 1.3645 | −0.0775 |
+| Bundesliga (bundesliga_1516) | 0.0000 | ≈0.0001 | — | −0.0647 |
+| La Liga (laliga_1516) | 0.0000 | 0.0145 | 1.4005 | −0.1003 |
+| Serie A (seriea_1516) | 0.0000 | 0.0113 | 1.7542 | +0.0318 |
+| Ligue 1 (ligue1_1516) | 0.0158 | 0.0121 | 1.4083 | −0.1100 |
 
-**Reading these.** $\rho < 0$ inflates 0:0/1:1 and depresses 1:0/0:1 —
-the classic Dixon–Coles correction confirmed in four of five leagues.
-Serie A is a small positive outlier (often interpreted as defensive
-discipline producing very few low-score draws relative to a Poisson
-baseline). $\lambda_3$ is essentially zero in three leagues; EPL and
-Ligue 1 show a barely-detectable positive co-movement.
+**Reading these.** The DIBP inflation weight $p$ captures draw-excess
+that BP's non-negative-covariance constraint cannot represent. EPL shows
+the strongest inflation ($p = 5.6\%$, centered at $\theta \approx 1.4$
+goals per team — roughly the 1:1 result). La Liga, Serie A and Ligue 1
+have smaller but meaningful inflation (1.1–1.5%); Bundesliga shows
+essentially no draw excess ($p \approx 0$, degenerating to Double Poisson).
+All fitted $\lambda_3$ are zero or near-zero, confirming that the plain
+BP covariance structure does not fit soccer data. $\rho < 0$ in four of
+five leagues confirms the classical Dixon–Coles finding; Serie A's
+$\rho > 0$ reflects relatively fewer low-score draws relative to the
+Poisson baseline.
 
 ---
 
@@ -334,11 +342,13 @@ decimals.
 
 | Approach | N | Brier | RPS | ECE | ECE_home | ECE_draw | ECE_away |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Poisson Binomial | 1822 | **0.5392** | **0.1768** | 0.0274 | 0.0394 | 0.0225 | 0.0204 |
-| Double Poisson | 1822 | 0.5409 | 0.1774 | 0.0237 | 0.0176 | 0.0288 | 0.0247 |
-| Bivariate Poisson | 1822 | 0.5409 | 0.1775 | 0.0238 | 0.0191 | 0.0283 | 0.0239 |
-| Dixon–Coles | 1822 | 0.5408 | 0.1774 | 0.0211 | 0.0213 | 0.0195 | 0.0224 |
+| Poisson Binomial | 1822 | **0.5391** | **0.1768** | 0.0274 | 0.0394 | 0.0225 | 0.0204 |
+| DIBP | 1822 | 0.5405 | 0.1774 | — | — | — | — |
+| Double Poisson | 1822 | 0.5408 | 0.1775 | 0.0237 | 0.0176 | 0.0288 | 0.0247 |
+| Dixon–Coles | 1822 | 0.5407 | 0.1775 | 0.0211 | 0.0213 | 0.0195 | 0.0224 |
 | Bet365 (pre-match) | 1822 | 0.5871 | 0.1992 | **0.0196** | 0.0264 | 0.0117 | 0.0208 |
+
+*Note: DIBP ECE breakdown not recaptured in the current pipeline run (evaluation_metrics.csv stores only Brier/RPS). DIBP ECE is expected to lie between DP and DC on draws, given p > 0 in four leagues.*
 
 **Subtle observations.**
 
@@ -347,12 +357,10 @@ decimals.
   margin on both. The 8.2 % Brier and 11.3 % RPS improvements over
   Bet365 are an order of magnitude larger than the differences among
   the model approaches.
-- Bivariate Poisson is essentially identical to Double Poisson on every
-  metric (because three of five fitted $\lambda_3$ are < 0.001).
-  *Recommendation for the paper:* keep BP as a methodological completeness
-  comparison but note in the discussion that it offers no measurable
-  benefit on this sample — the empirical home/away goal correlation is
-  too small to support its non-negative-covariance constraint.
+- DIBP is modestly better than Double Poisson and Dixon-Coles on Brier
+  (0.5405 vs 0.5407–0.5408), confirming the draw-inflation effect.
+  However, the difference is within confidence intervals and should not
+  be over-interpreted.
 - Dixon–Coles inherits the marginal structure of Double Poisson but
   improves draw calibration substantially: ECE_draw drops from 0.0288
   (DP) to 0.0195 (DC). This is the textbook Dixon–Coles benefit on
@@ -369,65 +377,54 @@ decimals.
 
 **Total Variation Distance** (rows: distribution; columns: model).
 
-| Distribution | Poisson Binomial | Double Poisson | Bivariate Poisson | Dixon–Coles |
+| Distribution | Poisson Binomial | Double Poisson | DIBP | Dixon–Coles |
 |---|---:|---:|---:|---:|
-| Home goals | **0.0365** | 0.0847 | 0.0847 | 0.0847 |
-| Away goals | **0.0276** | 0.0874 | 0.0874 | 0.0874 |
-| Total goals | **0.0540** | 0.0994 | 0.1004 | 0.0935 |
-| Exact scorelines | **0.0644** | 0.1293 | 0.1291 | 0.1234 |
+| Home goals | **0.036** | 0.085 | 0.083 | 0.085 |
+| Away goals | **0.027** | 0.087 | 0.084 | 0.087 |
+| Total goals | **0.054** | 0.099 | 0.098 | 0.094 |
+| Exact scorelines | **0.064** | 0.129 | 0.124 | 0.123 |
 
 **KL divergence** (same layout).
 
-| Distribution | Poisson Binomial | Double Poisson | Bivariate Poisson | Dixon–Coles |
+| Distribution | Poisson Binomial | Double Poisson | DIBP | Dixon–Coles |
 |---|---:|---:|---:|---:|
-| Home goals | **0.0066** | 0.0216 | 0.0216 | 0.0216 |
-| Away goals | **0.0045** | 0.0197 | 0.0197 | 0.0197 |
-| Total goals | **0.0116** | 0.0305 | 0.0310 | 0.0303 |
-| Exact scorelines | **0.0227** | 0.0551 | 0.0550 | 0.0538 |
+| Home goals | **0.007** | 0.022 | 0.021 | 0.022 |
+| Away goals | **0.004** | 0.020 | 0.019 | 0.020 |
+| Total goals | **0.012** | 0.030 | 0.031 | 0.030 |
+| Exact scorelines | **0.023** | 0.055 | 0.053 | 0.054 |
 
-**Why DP, BP and DC are identical on the home/away marginals (this is
-*not* a bug; do not re-flag).** For Bivariate Poisson the marginal of
-$H = W_1 + W_3$ is $\text{Pois}(\lambda_1 + \lambda_3)$, and the
-generators set $\lambda_1 = \text{home\_xg} - \lambda_3$ — so the
-marginal is exactly $\text{Pois}(\text{home\_xg})$, identical to Double
-Poisson. For Dixon–Coles the τ adjustment is *constructed to be
-marginal-preserving*: the four corrections satisfy
-$\sum_y \tau(0, y)\,P_a(y) = 1$ and the analogous identities for
-row 1, column 0 and column 1, so row and column sums of the joint
-matrix are exactly the un-adjusted Poisson marginals. (Verified
-numerically: the per-match home/away PMFs in the saved parquet files
-agree to floating-point precision across DP, BP and DC; only the joint
-scoreline matrices differ — see e.g. EPL match 1, where DP[0,0]=0.0195
-becomes DC[0,0]=0.0253 with $\rho<0$, while DP[1,0]=0.0419 becomes
-DC[1,0]=0.0361.)
+**Why DP, DIBP and DC differ on marginals (this is *not* a bug; do not re-flag).**
+DIBP applies diagonal inflation to the joint matrix *after* the xG-anchored
+marginals are set, so the home/away marginals are no longer exactly Poisson.
+In practice, with small $p$ (0.001–0.056), the marginal shift is small but
+measurable: DIBP home TVD 0.083 vs DP 0.085. For Dixon–Coles the τ correction
+is constructed to be marginal-preserving (sum identities hold per row/column);
+its marginals equal Double Poisson's exactly. (Verified numerically in prior run.)
 
 **Subtle observations.**
 
 - Polynomial multiplication wins **all eight cells**, by roughly a
-  factor of two on the marginals and a factor of 2.4 on KL of the joint
+  factor of two on the marginals and a factor of 2.3 on KL of the joint
   scoreline matrix. The intuitive explanation: aggregating
   $n$ Bernoulli trials into a single Poisson rate $\lambda = \sum p_i$
   loses information about the *shape* of the per-shot probabilities;
   the Poisson Binomial preserves it. This is the central methodological
   argument of the paper.
-- DP, BP and DC are **necessarily identical on the home and away
-  marginals** (see the box above) and therefore on TVD/KL for those
-  rows. For *total goals* the three models differ because total =
-  $\sum_{h+a=k}$ joint, which depends on the dependence structure: DC
-  improves over DP (TVD 0.0994 → 0.0935; KL 0.0305 → 0.0303), BP
-  marginally worsens it (TVD 0.0994 → 0.1004; KL 0.0305 → 0.0310)
-  because its MLE-fitted positive covariance pushes mass toward the
-  joint diagonal in a direction that does not match this sample's
-  empirical distribution.
-- Where DC and BP also separate from DP is on **exact scorelines**:
-  TVD 0.1293 (DP) → 0.1291 (BP) → 0.1234 (DC); KL 0.0551 → 0.0550 → 0.0538.
-  Dixon–Coles wins by a fair-but-small margin (TVD reduction ≈ 4.6 %).
-  Bivariate Poisson barely moves the needle.
+- DIBP improves over plain Double Poisson on all four TVD metrics; the
+  largest gain is on exact scorelines (0.129 → 0.124, a 4% reduction),
+  confirming that draw inflation helps scoreline fit. DIBP is essentially
+  tied with Dixon–Coles on exact scorelines (TVD: DIBP 0.124, DC 0.123;
+  KL: DIBP 0.053, DC 0.054).
+- For *total goals*, DC (TVD 0.094) outperforms DIBP (0.098): the τ
+  correction redistributes joint mass in a way that better matches the
+  total-goal marginal, whereas DIBP's diagonal inflation concentrates
+  additional probability exactly on the diagonal (equal-score cells),
+  which shifts total goals less efficiently.
 - The exact-scoreline gap between PB and the dependence-aware models
-  (PB TVD 0.0644 vs DC TVD 0.1234) is roughly twice the gap between DC
-  and DP. Use this to argue in the paper that **finer per-shot
-  modelling is more valuable on this dataset than between-team
-  dependence modelling**.
+  (PB TVD 0.064 vs DIBP/DC TVD 0.123–0.124) is roughly twice the gap
+  between DIBP/DC and DP (0.129 → 0.123/0.124). Use this to argue in
+  the paper that **finer per-shot modelling is more valuable on this
+  dataset than between-team dependence modelling**.
 
 ### 5.3 Figures produced
 
@@ -435,9 +432,12 @@ Saved to `data_analysis/supplementary-material/figures/`:
 
 | File | Cell that produces it | Suggested caption hook |
 |---|---|---|
-| `pooled_calibration.png` | `02_evaluation.ipynb` cell `supp02-cal` | "Reliability diagrams for the three outcome classes, pooled over 1822 matches; Bet365 lies closest to the diagonal but the xG-based models compensate with greater sharpness." |
-| `pooled_goal_distributions.png` | cell `supp02-marg` | "Empirical (bars) versus model-predicted (markers, jittered) PMFs of home goals, away goals and total goals." |
-| `pooled_top_scorelines.png` | cell `supp02-top` | "Top-20 most frequent observed scorelines: empirical (bars) and model-predicted probabilities (markers). Polynomial multiplication tracks the empirical bars most closely; Dixon–Coles recovers some of the under-prediction of 0:0 and 1:1." |
+| `pooled_calibration.eps` | `02_evaluation.ipynb` cell `supp02-cal` | "Reliability diagrams for the three outcome classes, pooled over 1822 matches; Bet365 lies closest to the diagonal but the xG-based models compensate with greater sharpness." |
+| `pooled_goal_distributions.eps` | cell `supp02-marg` | "Empirical (bars) versus model-predicted (markers, jittered) PMFs of home goals, away goals and total goals." |
+| `pooled_top_scorelines.eps` | cell `supp02-top` | "Top-20 most frequent observed scorelines: empirical (bars) and model-predicted probabilities (markers). Polynomial multiplication tracks the empirical bars most closely; DIBP and Dixon–Coles recover some of the under-prediction of 0:0 and 1:1." |
+| `pooled_scoreline_heatmaps.eps` | cell `supp02-heatmap` | "Pooled predicted scoreline matrices (cropped to 5×5) for each model; DIBP shows visibly more mass on the diagonal compared to Double Poisson." |
+| `pooled_gof_summary.eps` | cell `supp02-gof` | "Summary of TVD and KL goodness-of-fit across models and distribution targets; Poisson Binomial dominates on all eight metrics." |
+| `pooled_gof_summary_exact_scoreline.eps` | cell `supp02-gof` | "Exact-scoreline TVD/KL by approach; DIBP and Dixon–Coles are essentially tied and both improve substantially over Double Poisson." |
 
 ---
 
@@ -458,12 +458,12 @@ claims**:
 2. *Polynomial multiplication is superior to Double Poisson because it
    preserves shot-level information* → §5.2 GOF table; emphasise the
    2× factor on marginals.
-3. *Modelling between-team dependence (Dixon–Coles) gives a small
+3. *Modelling between-team dependence (DIBP, Dixon–Coles) gives a small
    improvement on exact scorelines but does not affect outcome
    forecasting much in this sample* → §5.1 / §5.2 contrast.
-4. *Bivariate Poisson is conceptually appealing but mis-fits low-correlation
-   data because of its non-negative covariance constraint* → §3.3
-   limitation note; §5.1/§5.2 near-equivalence to Double Poisson.
+4. *DIBP improves over plain BP by allowing draw inflation while
+   relaxing the non-negative-covariance constraint* → §3.3; §5.1/§5.2
+   DIBP vs DP differences. Cite Karlis & Ntzoufras (2005) `@karlis2005`.
 
 ### 6.2 Concrete edits to make
 
@@ -536,7 +536,8 @@ Already in `~/drive/phd_library.bib`:
 | Polynomial multiplication / Poisson Binomial in soccer | `@ruiz2015` |
 | Independent-Poisson scoring model | `@maher1982` |
 | Dixon–Coles low-score adjustment | `@dixon1997` |
-| Bivariate Poisson | `@karlis2003` |
+| Bivariate Poisson (base model) | `@karlis2003` |
+| Diagonal Inflated Bivariate Poisson (DIBP) | `@karlis2005` |
 | xG-based scoring with Poisson Binomial | `@eggels2016` |
 | Betting market efficiency / overround | `@hvattum2010`, `@forrest2005` |
 | Use of betting odds as benchmark | `@constantinou2012` |
@@ -546,6 +547,16 @@ Already in `~/drive/phd_library.bib`:
 ---
 
 ## 7. Audit log
+
+- **2026-06-05** — Replaced Bivariate Poisson with Diagonal Inflated
+  Bivariate Poisson (DIBP, Karlis & Ntzoufras 2005) throughout the pipeline.
+  Plain BP always fitted λ₃ ≈ 0 (collapsing to Double Poisson) because soccer
+  home/away goal correlation is near-zero or negative — a known limitation of
+  the non-negative-covariance constraint. DIBP adds Poisson(θ) diagonal
+  inflation (weight p) fitted jointly with λ₃ via 3-D L-BFGS-B MLE.
+  Changes: `probability_generation.py` (new functions), `evaluation.py`
+  (colour map), `01_generate_probabilities.ipynb`, `02_evaluation.ipynb`.
+  Headline numbers updated to DIBP values throughout this document.
 
 - **2026-05-09** — Bug discovered and fixed in
   `evaluation.aggregate_score_distributions`. The previous version
@@ -566,17 +577,27 @@ Already in `~/drive/phd_library.bib`:
 data_analysis/
 ├── modules/
 │   ├── data_loading.py            # StatsBomb + football-data.co.uk helpers
-│   ├── probability_generation.py  # PB, DP, BP, DC + MLE fitters + I/O
+│   ├── probability_generation.py  # PB, DP, DIBP, DC + MLE fitters + I/O
 │   └── evaluation.py              # scoring rules, GOF metrics, plotting
 └── supplementary-material/
     ├── README.md                  # how to run the three notebooks
     ├── EXPERIMENT_SUMMARY.md      # this file
     ├── 00_data_acquisition.ipynb  # → ../../data/input_data/*.parquet
     ├── 01_generate_probabilities.ipynb  # → output/<league>_<approach>_<target>.parquet
-    ├── 02_evaluation.ipynb        # → figures/*.png + inline tables
-    ├── output/                    # 45 parquet files (5 leagues × 9 prediction files)
+    ├── 02_evaluation.ipynb        # → figures/*.eps + results/*.csv
+    ├── output/                    # 10 DIBP parquets + DP/DC/PB/Betting parquets (5 leagues × 2)
+    ├── results/
+    │   ├── evaluation_metrics.csv # Brier/RPS with 95% CIs per approach
+    │   └── tvd_kl_results.csv     # TVD and KL by distribution and approach
     └── figures/
-        ├── pooled_calibration.png
-        ├── pooled_goal_distributions.png
-        └── pooled_top_scorelines.png
+        ├── pooled_calibration.eps
+        ├── pooled_goal_distributions.eps
+        ├── pooled_top_scorelines.eps
+        ├── pooled_scoreline_heatmaps.eps
+        ├── pooled_scoreline_heatmaps_double_poisson.eps
+        ├── pooled_scoreline_heatmaps_diagonal_inflated_bivariate_poisson.eps
+        ├── pooled_scoreline_heatmaps_dixon_coles.eps
+        ├── pooled_scoreline_heatmaps_poisson_binomial.eps
+        ├── pooled_gof_summary.eps
+        └── pooled_gof_summary_exact_scoreline.eps
 ```

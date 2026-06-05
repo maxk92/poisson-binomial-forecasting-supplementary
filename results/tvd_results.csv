@@ -3,5 +3,5 @@
 Approach,,,,
 Poisson Binomial,0.036,0.027,0.054,0.064
 Double Poisson,0.085,0.087,0.099,0.129
-Bivariate Poisson,0.085,0.087,0.1,0.129
+Bivariate Poisson,0.083,0.084,0.098,0.124
 Dixon-Coles,0.085,0.087,0.094,0.123
