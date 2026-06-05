@@ -1,0 +1,7 @@
+,TVD,TVD,TVD,TVD,KL,KL,KL,KL
+,Home goals,Away goals,Total goals,Exact scorelines,Home goals,Away goals,Total goals,Exact scorelines
+Approach,,,,,,,,
+Poisson Binomial,0.036,0.027,0.054,0.064,0.007,0.004,0.012,0.023
+Double Poisson,0.085,0.087,0.099,0.129,0.022,0.02,0.03,0.055
+Bivariate Poisson,0.085,0.087,0.1,0.129,0.022,0.02,0.031,0.055
+Dixon-Coles,0.085,0.087,0.094,0.123,0.022,0.02,0.03,0.054
