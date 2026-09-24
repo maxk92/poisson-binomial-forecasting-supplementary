@@ -7,12 +7,18 @@ Public API
 ----------
 Core algorithms (competition- and match-id-agnostic)
     poisson_binomial_pmf(xg_values)
+    poisson_binomial_moments(xg_values)
     double_poisson_pmf(lambda_val, max_goals)
     bivariate_poisson_matrix(lambda1, lambda2, lambda3, max_goals)
     diagonal_inflated_bivariate_poisson_matrix(lambda1, lambda2, lambda3, p, theta, max_goals)
     dixon_coles_matrix(lambda_h, lambda_a, rho, max_goals)
     scoreline_matrix_from_pmfs(home_pmf, away_pmf)
     outcome_probs_from_scoreline(scoreline_matrix)
+
+Distribution aggregation helpers
+    points_pmf(p_win, p_draw, p_loss)
+    convolve_pmfs(pmfs, max_len=None)
+    discrete_dist_summary(pmf, q=(0.025, 0.975))
 
 Parameter fitting (global per dataset, via MLE on observed scores)
     fit_bivariate_poisson_lambda3(data, max_goals)
@@ -91,6 +97,46 @@ def poisson_binomial_pmf(xg_values: Sequence[float]) -> np.ndarray:
     for p in xg[1:]:
         result = np.convolve(result, np.array([1.0 - p, p]))
     return result
+
+
+def poisson_binomial_moments(xg_values: Sequence[float]) -> dict[str, float]:
+    """
+    Closed-form moments of the Poisson Binomial goal count.
+
+    For per-shot success probabilities p_i (the xG values), the goal count
+    X = Σ Bernoulli(p_i) has, exactly:
+
+        E[X]     = Σ p_i                      (= the xG sum)
+        Var[X]   = Σ p_i (1 - p_i)            (≤ E[X]; underdispersed vs Poisson)
+        skew_num = Σ p_i (1 - p_i)(1 - 2 p_i) (third central moment)
+        P(X = 0) = Π (1 - p_i)
+
+    No truncation is involved — these are analytic and exact regardless of the
+    ``max_goals`` cap applied elsewhere.
+
+    Parameters
+    ----------
+    xg_values : sequence of float
+        Per-shot xG values (probabilities in (0, 1]).  NaNs are dropped.
+
+    Returns
+    -------
+    dict with keys ``mean``, ``var``, ``skew_num``, ``dispersion``
+    (``var / mean``, NaN if ``mean == 0``), ``p_zero``, ``n_shots``.
+    """
+    xg = np.array([float(x) for x in xg_values if not np.isnan(x)], dtype=float)
+    n_shots = int(xg.size)
+    if n_shots == 0:
+        return {"mean": 0.0, "var": 0.0, "skew_num": 0.0,
+                "dispersion": float("nan"), "p_zero": 1.0, "n_shots": 0}
+    q = 1.0 - xg
+    mean = float(xg.sum())
+    var = float(np.sum(xg * q))
+    skew_num = float(np.sum(xg * q * (q - xg)))
+    dispersion = var / mean if mean > 0 else float("nan")
+    p_zero = float(np.prod(q))
+    return {"mean": mean, "var": var, "skew_num": skew_num,
+            "dispersion": dispersion, "p_zero": p_zero, "n_shots": n_shots}
 
 
 def double_poisson_pmf(lambda_val: float, max_goals: int = 10) -> np.ndarray:
@@ -295,6 +341,80 @@ def outcome_probs_from_scoreline(
     p_draw     = float(np.sum(np.diag(scoreline_matrix)))
     p_away_win = float(np.sum(np.triu(scoreline_matrix, k=1)))
     return {"p_home_win": p_home_win, "p_draw": p_draw, "p_away_win": p_away_win}
+
+
+# ── Distribution aggregation helpers ─────────────────────────────────────────
+
+def points_pmf(p_win: float, p_draw: float, p_loss: float) -> np.ndarray:
+    """
+    Per-match league-points distribution as a PMF over 0..3.
+
+    Points take values in {0, 1, 3} with probabilities {p_loss, p_draw, p_win},
+    so the PMF is ``[p_loss, p_draw, 0.0, p_win]``.  Renormalised defensively.
+    """
+    pmf = np.array([float(p_loss), float(p_draw), 0.0, float(p_win)], dtype=float)
+    s = pmf.sum()
+    return pmf / s if s > 0 else pmf
+
+
+def convolve_pmfs(pmfs: Sequence[np.ndarray], max_len: Optional[int] = None) -> np.ndarray:
+    """
+    Convolve a sequence of independent PMFs (each indexed from 0) into the PMF
+    of their sum.
+
+    Parameters
+    ----------
+    pmfs : sequence of 1-D arrays
+        Individual PMFs; ``pmf[k] = P(value = k)``.
+    max_len : int, optional
+        If given, the running convolution is truncated to this length after
+        each step (and the final result renormalised) to bound cost when the
+        exact support is far larger than the mass-bearing region.
+
+    Returns
+    -------
+    np.ndarray — PMF of the sum.  Empty input returns ``[1.0]`` (point mass at 0).
+    """
+    result = np.array([1.0])
+    for pmf in pmfs:
+        result = np.convolve(result, np.asarray(pmf, dtype=float))
+        if max_len is not None and result.size > max_len:
+            result = result[:max_len]
+    s = result.sum()
+    return result / s if s > 0 else result
+
+
+def discrete_dist_summary(
+    pmf: Sequence[float],
+    q: tuple[float, float] = (0.025, 0.975),
+) -> dict[str, float]:
+    """
+    Summary statistics of a discrete distribution supported on 0, 1, 2, ….
+
+    Returns the mean ``Σ k·pmf[k]``, standard deviation, mode, and the lower /
+    upper quantiles ``q_lo`` / ``q_hi`` (smallest integer k with CDF ≥ the
+    respective level) — i.e. a predictive interval, not a parameter CI.
+
+    Returns
+    -------
+    dict with keys ``mean``, ``sd``, ``var``, ``mode``, ``q_lo``, ``q_hi``.
+    """
+    p = np.asarray(pmf, dtype=float)
+    s = p.sum()
+    if s <= 0:
+        return {"mean": 0.0, "sd": 0.0, "var": 0.0, "mode": 0,
+                "q_lo": 0, "q_hi": 0}
+    p = p / s
+    k = np.arange(p.size)
+    mean = float(np.sum(k * p))
+    var = float(np.sum((k - mean) ** 2 * p))
+    cdf = np.cumsum(p)
+    q_lo = int(np.searchsorted(cdf, q[0], side="left"))
+    q_hi = int(np.searchsorted(cdf, q[1], side="left"))
+    q_lo = min(q_lo, p.size - 1)
+    q_hi = min(q_hi, p.size - 1)
+    return {"mean": mean, "sd": float(np.sqrt(var)), "var": var,
+            "mode": int(np.argmax(p)), "q_lo": q_lo, "q_hi": q_hi}
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -519,6 +639,16 @@ def generate_poisson_binomial_probs(
         rec.update(probs)
         rec["actual_outcome"] = _actual_outcome(int(row["home_goals"]), int(row["away_goals"]))
         rec["approach"] = "poisson_binomial"
+        # Closed-form goal-count moments (analytic, no truncation): the PB mean
+        # equals the xG sum, but its variance / dispersion / shut-out prob carry
+        # information the xG-sum (Poisson) approaches cannot represent.
+        for side, xg_vals in (("home", home_xg), ("away", away_xg)):
+            m = poisson_binomial_moments(xg_vals)
+            rec[f"{side}_exp_goals_pb"]   = m["mean"]
+            rec[f"{side}_var_goals_pb"]   = m["var"]
+            rec[f"{side}_dispersion_pb"]  = m["dispersion"]
+            rec[f"{side}_p_zero_pb"]      = m["p_zero"]
+            rec[f"{side}_n_shots"]        = m["n_shots"]
         rows.append(rec)
     return pd.DataFrame(rows)
 
@@ -547,6 +677,13 @@ def generate_double_poisson_probs(
         rec.update(probs)
         rec["actual_outcome"] = _actual_outcome(int(row["home_goals"]), int(row["away_goals"]))
         rec["approach"] = "double_poisson"
+        # xG-sum (Poisson) reference goal-count moments: goals ~ Poisson(lambda),
+        # so Var = lambda = xG sum and P(0) = exp(-lambda).  DC marginals are
+        # ~identical, so these double as the DC reference too.
+        for side in ("home", "away"):
+            lam = float(row[f"{side}_xg"])
+            rec[f"{side}_var_goals_pois"] = lam
+            rec[f"{side}_p_zero_pois"]    = float(np.exp(-lam))
         rows.append(rec)
     return pd.DataFrame(rows)
 
